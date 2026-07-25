@@ -1,0 +1,102 @@
+# Experiment configuration.
+#
+# The two generators must come from DIFFERENT model families — that difference
+# is the independent variable. Two models from the same family would test
+# nothing, since their training distributions (and therefore their blind spots)
+# are the thing assumed to be correlated.
+#
+# Tier matters too: pair models of comparable capability. A frontier model
+# against a cheap one turns the symmetry check into a capability measurement.
+# Mid-tier is also the better choice for a different reason — frontier models
+# produce fewer natural defects, and a ledger with 8 entries has nothing to
+# measure. You want code that is good but not flawless.
+
+generators:
+  claude:
+    provider: anthropic
+    model: claude-sonnet-5
+  gpt:
+    provider: openai
+    model: gpt-5.6-terra
+
+# Reviewers MUST be the same two models as the generators. The self-review arm
+# is only "self" if reviewer and generator are the same model; changing one
+# without the other silently turns arm 2 into a second cross arm.
+reviewers:
+  claude:
+    provider: anthropic
+    model: claude-sonnet-5
+  gpt:
+    provider: openai
+    model: gpt-5.6-terra
+
+# Ground-truth auditors.
+#
+# Ideally a third model family, so the ledger is not biased toward defects that
+# either generator's family can already see. With only two providers available,
+# the next best thing is to run BOTH families and union their candidates: no
+# single family's blind spots then determine what counts as ground truth.
+#
+# Use the strongest model from each family — the auditor's job is recall, and
+# the human confirmation pass filters its false positives.
+auditors:
+  claude_auditor:
+    provider: anthropic
+    model: claude-opus-5
+  gpt_auditor:
+    provider: openai
+    model: gpt-5.6-sol
+
+# Temperature 0 everywhere. Rerun variance would otherwise be confounded with
+# the effect being measured. Note that Claude models with adaptive thinking and
+# OpenAI reasoning models do not behave fully deterministically even at 0 —
+# recorded under threats to validity rather than pretended away.
+# Set to null to omit the parameter entirely — models with thinking enabled
+# reject an explicit temperature and return HTTP 400.
+temperature: null
+# Review output is small JSON, but reasoning tokens count against this cap on
+# OpenAI reasoning models and thinking can consume it on Anthropic models with
+# thinking enabled. Truncation now raises rather than silently returning empty
+# findings, but headroom avoids the failures in the first place.
+max_tokens: 8192
+
+# OpenAI reasoning effort. Set explicitly rather than left to the default, so
+# the value used is recorded alongside the results. Raising this for one family
+# without a matching change on the other reintroduces a capability confound.
+reasoning_effort: medium
+
+# Per-million-token pricing (standard processing), used for cost-per-catch.
+#
+# Re-verify before publishing — provider pricing changes and a stale number
+# here quietly makes the cost column wrong.
+#
+# Note the generator pair is near price-parity ($3.00/$15.00 vs $2.50/$15.00),
+# which is a useful sanity check on the tier match: models priced the same are
+# usually positioned at the same capability tier, and a tier mismatch is what
+# would turn the symmetry check into a capability measurement.
+#
+# Batch processing is 50% cheaper and this workload is entirely non-interactive,
+# so it is a natural fit if you expand the corpus enough for cost to matter.
+# Not wired up here — it adds async polling for no benefit at this scale.
+pricing:
+  claude:
+    input_per_mtok: 3.00      # claude-sonnet-5
+    output_per_mtok: 15.00
+  gpt:
+    input_per_mtok: 2.50      # gpt-5.6-terra
+    output_per_mtok: 15.00
+  claude_auditor:
+    input_per_mtok: 5.00      # claude-opus-5
+    output_per_mtok: 25.00
+  gpt_auditor:
+    input_per_mtok: 5.00      # gpt-5.6-sol
+    output_per_mtok: 30.00
+
+paths:
+  tasks: tasks/tasks.yaml
+  ledger: results/ledger.yaml
+  generations: results/generations.jsonl
+  findings: results/findings.jsonl
+  report: results/report.md
+  generate_prompt: prompts/generate.md
+  review_prompt: prompts/review.md

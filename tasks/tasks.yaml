@@ -1,0 +1,122 @@
+# Task corpus.
+#
+# Chosen to look like production backend work rather than competitive
+# programming, because the defect distribution differs sharply between the two
+# and the write-up claims relevance to real PRs.
+#
+# Each task deliberately contains at least one under-specified area where a
+# reasonable implementation can go wrong — concurrency, resource lifetime,
+# boundary conditions, or partial-failure handling. The specs do NOT flag these
+# areas, since flagging them would suppress the natural defects being measured.
+#
+# Expand this file to grow N. Per-category cells get thin below ~20 tasks.
+
+conventions: |
+  - All public functions have type hints and a one-line docstring.
+  - Errors are raised as domain exceptions from `errors.py`, never bare Exception.
+  - No print statements; use the module-level `logger`.
+  - Any network or file handle must be closed on all paths.
+  - Time is obtained via `clock.now()`, never `datetime.now()`, so tests can freeze it.
+  - Public functions validate their inputs and raise `InvalidInput` on violation.
+
+tasks:
+  - id: rate_limiter
+    language: python
+    signature: |
+      class SlidingWindowRateLimiter:
+          def __init__(self, max_requests: int, window_seconds: float) -> None: ...
+          def allow(self, key: str) -> bool: ...
+    spec: |
+      Implement a sliding-window rate limiter used by an HTTP middleware.
+      `allow(key)` returns True if the caller identified by `key` is under the
+      limit, False otherwise. The limiter is shared across request threads.
+      Old entries should not accumulate for keys that stop being used.
+
+  - id: retry_with_backoff
+    language: python
+    signature: |
+      def call_with_retry(fn: Callable[[], T], attempts: int, base_delay: float) -> T: ...
+    spec: |
+      Call `fn`, retrying on transient failures with exponential backoff.
+      `TransientError` is retryable; `PermanentError` is not. After exhausting
+      attempts, surface the failure to the caller. Total wait should be bounded
+      so a caller cannot hang indefinitely.
+
+  - id: batch_writer
+    language: python
+    signature: |
+      class BatchWriter:
+          def __init__(self, sink: Sink, batch_size: int, flush_interval: float) -> None: ...
+          def write(self, record: dict) -> None: ...
+          def close(self) -> None: ...
+    spec: |
+      Buffer records and flush to `sink` when the buffer reaches `batch_size`
+      or `flush_interval` seconds have elapsed since the last flush, whichever
+      comes first. `write` is called from multiple producer threads. `close`
+      must not lose buffered records.
+
+  - id: paginated_fetch
+    language: python
+    signature: |
+      def fetch_all(client: ApiClient, page_size: int) -> list[dict]: ...
+    spec: |
+      Page through a cursor-based API until exhausted and return all records.
+      The API returns `{"items": [...], "next_cursor": str | None}`. The API
+      occasionally returns a repeated cursor under load.
+
+  - id: config_merge
+    language: python
+    signature: |
+      def merge_config(base: dict, override: dict) -> dict: ...
+    spec: |
+      Deep-merge `override` onto `base` and return the result. Nested dicts
+      merge recursively; lists and scalars are replaced wholesale. Neither
+      input may be mutated.
+
+  - id: signed_url
+    language: python
+    signature: |
+      def verify_signed_url(url: str, secret: str, max_age_seconds: int) -> bool: ...
+    spec: |
+      Verify a signed URL of the form `<path>?expires=<unix_ts>&sig=<hex>`,
+      where sig is an HMAC-SHA256 of `<path>?expires=<unix_ts>` under `secret`.
+      Return True only if the signature is valid and the URL has not expired.
+
+  - id: cache_with_ttl
+    language: python
+    signature: |
+      class TTLCache:
+          def __init__(self, max_entries: int, ttl_seconds: float) -> None: ...
+          def get(self, key: str) -> Optional[Any]: ...
+          def put(self, key: str, value: Any) -> None: ...
+    spec: |
+      An in-process cache with per-entry TTL and a bound on total entries.
+      When full, evict the least recently used entry. Reads and writes come
+      from multiple request threads.
+
+  - id: csv_ingest
+    language: python
+    signature: |
+      def ingest(path: str, sink: Sink) -> IngestReport: ...
+    spec: |
+      Stream a CSV from disk and write each valid row to `sink`. Rows failing
+      validation are skipped and counted. Return a report with counts of rows
+      read, written, and skipped. The file may be larger than available memory.
+
+  - id: dedupe_events
+    language: python
+    signature: |
+      def dedupe(events: Iterable[Event], window_seconds: float) -> Iterator[Event]: ...
+    spec: |
+      Suppress duplicate events (same `event.key`) seen within `window_seconds`
+      of a prior occurrence. Input is a potentially unbounded stream ordered by
+      timestamp. Emit each surviving event as soon as it is known to survive.
+
+  - id: partial_bulk_update
+    language: python
+    signature: |
+      def bulk_update(store: Store, updates: list[Update]) -> BulkResult: ...
+    spec: |
+      Apply a list of updates to `store`. Individual updates may fail. The
+      caller needs to know which succeeded and which failed, and failures must
+      not prevent remaining updates from being attempted.
