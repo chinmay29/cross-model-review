@@ -33,7 +33,7 @@ from src.ledger import (  # noqa: E402
     propose_candidates,
     save_ledger,
 )
-from src.pipeline import Task, generate, review_matrix  # noqa: E402
+from src.pipeline import Task, generate  # noqa: E402
 from src.report import full_report  # noqa: E402
 from src.schema import Finding, Generation, Category, Severity, dump_jsonl, load_jsonl  # noqa: E402
 from src.score import score_by_category, score_runs  # noqa: E402
@@ -162,62 +162,123 @@ def cmd_audit(cfg: dict, args) -> None:
     )
 
 
+def _run_key(row: dict) -> tuple[str, str, str]:
+    return (row["task_id"], row["reviewer"], row["target_generator"])
+
+
 def cmd_review(cfg: dict, args) -> None:
+    """Run the reviewer × generation matrix, resumably.
+
+    Rows are appended to findings.jsonl as each run completes, so a sleep,
+    crash, or Ctrl-C loses at most the single in-flight call. On restart,
+    successfully completed runs are skipped; runs that previously ERRORED are
+    retried (their stale error rows are dropped first). --fresh discards
+    everything and starts over.
+
+    Resume note for the methodology: a resumed batch spans more wall-clock time
+    than a single pass, but every run still executes with identical prompts,
+    config, and code inputs, which is the property the comparison needs.
+    """
+    from src.pipeline import review as review_one  # local import to keep top tidy
+
     tasks, conventions = load_tasks(cfg["paths"]["tasks"])
     gens = [Generation(**r) for r in load_jsonl(cfg["paths"]["generations"])]
     clients = build_clients(cfg, "reviewers", args.mock)
 
-    print(f"  {len(clients)} reviewers x {len(gens)} generations = {len(clients) * len(gens)} runs")
-    runs = review_matrix(
-        clients=clients,
-        generations=gens,
-        tasks=tasks,
-        conventions=conventions,
-        prompt_path=cfg["paths"]["review_prompt"],
-    )
+    findings_path = cfg["paths"]["findings"]
+    os.makedirs(os.path.dirname(findings_path) or ".", exist_ok=True)
 
-    rows = []
-    errored = 0
-    for run in runs:
-        if run.error:
-            errored += 1
-            print(f"  !! {run.task_id} {run.reviewer}->{run.target_generator}: {run.error}")
-            rows.append({
-                "finding_id": None,
-                "task_id": run.task_id,
-                "reviewer": run.reviewer,
-                "target_generator": run.target_generator,
-                "input_tokens": run.input_tokens,
-                "output_tokens": run.output_tokens,
-                "_run_error": run.error,
-            })
+    # --- Load prior progress ------------------------------------------------
+    prior_rows: list[dict] = []
+    if os.path.exists(findings_path) and not args.fresh:
+        prior_rows = load_jsonl(findings_path)
+
+    completed: set[tuple[str, str, str]] = set()
+    retry: set[tuple[str, str, str]] = set()
+    kept_rows: list[dict] = []
+    for row in prior_rows:
+        key = _run_key(row)
+        if row.get("_run_error"):
+            retry.add(key)          # stale error row: drop it, redo the run
             continue
-        for f in run.findings:
-            row = f.to_dict()
-            row["input_tokens"] = run.input_tokens
-            row["output_tokens"] = run.output_tokens
-            rows.append(row)
-        if not run.findings:
-            rows.append({
-                "finding_id": None,
-                "task_id": run.task_id,
-                "reviewer": run.reviewer,
-                "target_generator": run.target_generator,
-                "input_tokens": run.input_tokens,
-                "output_tokens": run.output_tokens,
-                "_empty_run": True,
-            })
+        completed.add(key)
+        kept_rows.append(row)
+    retry -= completed
 
-    dump_jsonl(cfg["paths"]["findings"], rows)
-    real = sum(1 for r in rows if not r.get("_empty_run") and not r.get("_run_error"))
-    print(f"\nWrote {real} findings across {len(runs)} runs -> {cfg['paths']['findings']}")
+    # Rewrite the file without stale error rows, then append from there.
+    dump_jsonl(findings_path, kept_rows)
+
+    total = len(gens) * len(clients)
+    if completed:
+        print(f"  resuming: {len(completed)} of {total} runs already complete"
+              + (f", retrying {len(retry)} previously errored" if retry else ""))
+
+    # --- Run what remains, appending per run --------------------------------
+    done = len(completed)
+    errored = 0
+    with open(findings_path, "a", encoding="utf-8") as fh:
+        for generation in gens:
+            task = tasks[generation.task_id]
+            for reviewer_key, client in clients.items():
+                key = (task.id, reviewer_key, generation.generator)
+                if key in completed:
+                    continue
+                done += 1
+                arm = "self " if reviewer_key == generation.generator else "cross"
+                print(f"  [{done:>2}/{total}] {arm}  {reviewer_key} -> "
+                      f"{generation.generator}'s {task.id} ...", flush=True)
+
+                run = review_one(
+                    client=client,
+                    reviewer_key=reviewer_key,
+                    generation=generation,
+                    task=task,
+                    conventions=conventions,
+                    prompt_path=cfg["paths"]["review_prompt"],
+                )
+
+                rows_out: list[dict] = []
+                if run.error:
+                    errored += 1
+                    print(f"      !! {run.error}")
+                    rows_out.append({
+                        "finding_id": None,
+                        "task_id": run.task_id,
+                        "reviewer": run.reviewer,
+                        "target_generator": run.target_generator,
+                        "input_tokens": run.input_tokens,
+                        "output_tokens": run.output_tokens,
+                        "_run_error": run.error,
+                    })
+                elif run.findings:
+                    for f in run.findings:
+                        row = f.to_dict()
+                        row["input_tokens"] = run.input_tokens
+                        row["output_tokens"] = run.output_tokens
+                        rows_out.append(row)
+                else:
+                    rows_out.append({
+                        "finding_id": None,
+                        "task_id": run.task_id,
+                        "reviewer": run.reviewer,
+                        "target_generator": run.target_generator,
+                        "input_tokens": run.input_tokens,
+                        "output_tokens": run.output_tokens,
+                        "_empty_run": True,
+                    })
+
+                for row in rows_out:
+                    fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+                fh.flush()  # survives sleep/crash after every run
+
+    real = done - errored
+    print(f"\n{real} of {total} runs complete -> {findings_path}")
     if errored:
         print(
-            f"\n  {errored} run(s) FAILED (API error, truncation, or unparsable "
-            f"output) and are recorded as errors, not as zero-finding reviews.\n"
-            f"  Re-run `python run.py review` after fixing the cause — scoring "
-            f"refuses to run while errored runs are present, because a missing "
-            f"run in one arm biases the comparison."
+            f"\n  {errored} run(s) FAILED and are recorded as errors, not as "
+            f"zero-finding reviews.\n  Fix the cause and re-run "
+            f"`python run.py review` — only the failed runs will be retried.\n"
+            f"  Scoring refuses to run while errored runs are present."
         )
 
 
@@ -330,6 +391,8 @@ def main() -> None:
     parser.add_argument("stage", choices=["doctor", "generate", "audit", "review", "score"])
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--mock", action="store_true", help="run offline with a deterministic fake client")
+    parser.add_argument("--fresh", action="store_true",
+                        help="discard prior review progress and rerun all runs from scratch")
     parser.add_argument("--allow-errored-runs", action="store_true",
                         help="score despite failed review runs (debugging only — biases the comparison)")
     parser.add_argument("--allow-unconfirmed", action="store_true",

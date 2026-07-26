@@ -58,7 +58,7 @@ temperature: null
 # OpenAI reasoning models and thinking can consume it on Anthropic models with
 # thinking enabled. Truncation now raises rather than silently returning empty
 # findings, but headroom avoids the failures in the first place.
-max_tokens: 8192
+max_tokens: 16384
 
 # OpenAI reasoning effort. Set explicitly rather than left to the default, so
 # the value used is recorded alongside the results. Raising this for one family

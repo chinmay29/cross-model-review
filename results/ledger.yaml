@@ -1,0 +1,1777 @@
+defects:
+- defect_id: 492763473c2e
+  task_id: rate_limiter
+  origin: claude
+  category: untested-branch
+  file: rate_limiter.py
+  line_start: 57
+  line_end: 59
+  description: 'Unreachable branch: at this point `window` can never be empty. If
+    `allowed` is True a timestamp was just appended; if False then len(window) >=
+    self._max_requests >= 1. The intended immediate cleanup of keys whose windows
+    just fully expired therefore never executes, and stale-key removal relies entirely
+    on the periodic sweep.'
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: 2cb7101799c3
+  task_id: rate_limiter
+  origin: claude
+  category: missing-edge-case
+  file: rate_limiter.py
+  line_start: 61
+  line_end: 64
+  description: Stale-key cleanup is driven only by a call counter, never by elapsed
+    time. If traffic stops (or drops below 1000 calls), all accumulated per-key deques
+    are retained indefinitely, violating the requirement that old entries not accumulate
+    for keys that stop being used. It also makes one unlucky caller pay the full O(n)
+    sweep cost while holding the lock.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: ad7d1fcc4473
+  task_id: rate_limiter
+  origin: claude
+  category: missing-edge-case
+  file: rate_limiter.py
+  line_start: 28
+  line_end: 34
+  description: 'Input validation gaps: `isinstance(True, int)` is True so `max_requests=True`
+    is silently accepted as 1, and NaN/inf are not rejected for `window_seconds` (`float(''nan'')
+    <= 0` is False). With window_seconds=NaN, `cutoff` becomes NaN, all eviction comparisons
+    are False, timestamps are never evicted and any key is permanently blocked after
+    max_requests hits.'
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+  - gpt_auditor
+- defect_id: 427df08e105a
+  task_id: rate_limiter
+  origin: claude
+  category: missing-edge-case
+  file: rate_limiter.py
+  line_start: 44
+  line_end: 45
+  description: Wall-clock timestamps are used for a monotonic-interval problem. If
+    `clock.now()` returns a naive datetime, `.timestamp()` interprets it in local
+    time (DST shifts) and any backward clock jump inserts out-of-order values into
+    the deque; `_evict_expired` only pops from the front while `window[0] <= cutoff`,
+    so an unsorted deque leaves newer-looking entries in front and stops eviction,
+    permanently skewing the limit.
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: 4a7a94bf7d19
+  task_id: rate_limiter
+  origin: gpt
+  category: concurrency
+  file: rate_limiter.py
+  line_start: 46
+  line_end: 70
+  description: The timestamp `now` (and `cutoff`) are read from `clock.now()` outside
+    the lock and only used after acquiring it. Two threads can therefore append timestamps
+    to the same deque out of chronological order, which breaks the invariant that
+    the deque is sorted ascending; the `while requests[0] <= cutoff` pruning loop
+    stops at the first non-expired head and so can leave stale entries permanently,
+    causing incorrect (over-strict or under-strict) limiting. `now` must be sampled
+    inside the critical section.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+  - gpt_auditor
+- defect_id: a7ca9dfd9042
+  task_id: rate_limiter
+  origin: gpt
+  category: security-relevant
+  file: rate_limiter.py
+  line_start: 62
+  line_end: 65
+  description: There is no bound on the number of distinct keys stored. An attacker
+    supplying many unique keys (e.g. spoofed identifiers) can grow `self._requests`
+    without limit within a window and simultaneously inflate the per-call full-dictionary
+    sweep, yielding a memory/CPU denial-of-service. A cap on tracked keys or an eviction
+    policy is needed.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: 15f6c9e2365e
+  task_id: rate_limiter
+  origin: gpt
+  category: convention-violation
+  file: rate_limiter.py
+  line_start: 38
+  line_end: 38
+  description: The state is typed `Dict[str, Deque[object]]` although it stores `datetime`
+    values obtained from `clock.now()`; the `object` element type defeats type checking
+    of the comparison `requests[0] <= cutoff` and violates the project's typing convention.
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: 899c6f3e5f21
+  task_id: retry_with_backoff
+  origin: claude
+  category: convention-violation
+  file: retry_with_backoff.py
+  line_start: 65
+  line_end: 69
+  description: Sleeping via `time.sleep` bypasses the injectable time source. The
+    module imports `clock` and the conventions require time to come from the clock
+    abstraction so tests can freeze/advance it; using the real `time.sleep` makes
+    retry behaviour untestable and makes tests actually block for the full backoff.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: 631adf2dd833
+  task_id: retry_with_backoff
+  origin: claude
+  category: logic-error
+  file: retry_with_backoff.py
+  line_start: 67
+  line_end: 69
+  description: '`raise last_error` happens outside the `except` block, so the exception
+    is re-raised without `from exc`/active context; the original traceback and exception
+    chaining context from the final attempt are lost, degrading diagnostics for the
+    caller.'
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+  - gpt_auditor
+- defect_id: 2e8599449faa
+  task_id: retry_with_backoff
+  origin: claude
+  category: missing-edge-case
+  file: retry_with_backoff.py
+  line_start: 55
+  line_end: 65
+  description: When the remaining wait budget is positive but nearly exhausted, `delay`
+    is clamped to a near-zero value and the loop keeps issuing attempts back-to-back
+    with effectively no backoff, hammering the downstream dependency instead of aborting;
+    only an exactly-zero/negative budget triggers the abort branch.
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: dde80ca6cf1b
+  task_id: retry_with_backoff
+  origin: gpt
+  category: logic-error
+  file: retry_with_backoff.py
+  line_start: 39
+  line_end: 69
+  description: When base_delay is 0 (explicitly allowed by the validation on lines
+    29-35), delay stays 0 forever because 0*2 == 0, so there is no exponential backoff
+    at all and the retries become a tight busy loop with no pause between attempts.
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: 71081b332cd5
+  task_id: retry_with_backoff
+  origin: gpt
+  category: untested-branch
+  file: retry_with_backoff.py
+  line_start: 71
+  line_end: 71
+  description: 'Unreachable dead code: since attempts >= 1 is enforced, every loop
+    iteration either returns or raises, so the loop can never terminate normally.
+    The line also misreports an internal invariant violation as a domain PermanentError.'
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: 8103df88be64
+  task_id: retry_with_backoff
+  origin: gpt
+  category: convention-violation
+  file: retry_with_backoff.py
+  line_start: 66
+  line_end: 66
+  description: Uses time.sleep() directly instead of an injectable clock helper, contradicting
+    the convention that time is obtained through the clock module so tests can freeze
+    it; tests must actually sleep in real time, and the mismatch between frozen clock.now()
+    and real sleeping forces the scheduled_wait workaround.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: 526300785ac0
+  task_id: retry_with_backoff
+  origin: gpt
+  category: logic-error
+  file: retry_with_backoff.py
+  line_start: 50
+  line_end: 53
+  description: The wait budget is computed from max(elapsed, scheduled_wait), so time
+    spent inside fn() itself is charged against the total *wait* budget. A slow-but-transiently-failing
+    fn can consume the 60s budget without any sleeping and cause retries to be abandoned
+    earlier than intended.
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: 3f32d7543291
+  task_id: batch_writer
+  origin: claude
+  category: logic-error
+  file: batch_writer.py
+  line_start: 90
+  line_end: 94
+  description: '`now()` returns a clock timestamp (datetime), so `now() - self._last_flush`
+    is a timedelta; subtracting it from the float `self._flush_interval` raises TypeError.
+    The time-based flush path therefore never works and the timer thread dies on its
+    first iteration.'
+  severity: critical
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+  - gpt_auditor
+- defect_id: f11172796b30
+  task_id: batch_writer
+  origin: claude
+  category: logic-error
+  file: batch_writer.py
+  line_start: 95
+  line_end: 97
+  description: '`remaining` is a timedelta (or a float mixed with timedelta arithmetic),
+    which is not a valid timeout for `Event.wait`; the interval-based flush scheduling
+    is broken.'
+  severity: critical
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+  - gpt_auditor
+- defect_id: 170d4a180196
+  task_id: batch_writer
+  origin: claude
+  category: concurrency
+  file: batch_writer.py
+  line_start: 93
+  line_end: 97
+  description: '`_flush` re-raises sink failures (line 115); that exception propagates
+    out of `_timer_loop`, silently killing the background timer thread. All subsequent
+    time-based flushes are lost for the lifetime of the writer, and `close`''s `join()`
+    succeeds without any indication.'
+  severity: critical
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: a1db1a29b5d7
+  task_id: batch_writer
+  origin: claude
+  category: concurrency
+  file: batch_writer.py
+  line_start: 62
+  line_end: 82
+  description: The lock is released between appending and flushing, so several producers
+    can each observe `len(buffer) >= batch_size` and multiple threads can enter `_flush`
+    concurrently; batches handed to the sink may also exceed `batch_size` because
+    other threads append in the gap.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+  - gpt_auditor
+- defect_id: bbec3c504b27
+  task_id: batch_writer
+  origin: claude
+  category: logic-error
+  file: batch_writer.py
+  line_start: 78
+  line_end: 84
+  description: In `close`, if `_flush` raises, the records are pushed back into `self._buffer`
+    but the sink is then closed and `_closed` is already True, so the buffered records
+    are permanently lost — violating the requirement that `close` must not lose buffered
+    records (no retry, no drain-to-error-path).
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+  - gpt_auditor
+- defect_id: ef32ca92f13a
+  task_id: batch_writer
+  origin: claude
+  category: convention-violation
+  file: batch_writer.py
+  line_start: 60
+  line_end: 61
+  description: Writing to a closed writer is not an input-validation failure; raising
+    `InvalidInput` misuses the domain exception (a distinct closed-state error is
+    required) and makes the closed condition indistinguishable from a bad record.
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: b2cd0e2b90ab
+  task_id: batch_writer
+  origin: claude
+  category: missing-edge-case
+  file: batch_writer.py
+  line_start: 32
+  line_end: 37
+  description: '`isinstance(batch_size, int)` accepts `bool`, so `BatchWriter(sink,
+    True, ...)` silently becomes batch_size=1 instead of raising InvalidInput.'
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+  - gpt_auditor
+- defect_id: 1289d5356cde
+  task_id: batch_writer
+  origin: gpt
+  category: logic-error
+  file: batch_writer.py
+  line_start: 68
+  line_end: 72
+  description: 'Periodic flush timing is wrong: the loop waits a fixed flush_interval
+    from the previous wake-up and then re-checks _interval_elapsed against _last_flush.
+    If a write-triggered flush happened just after a wake-up, the next wake-up finds
+    the interval not yet elapsed and skips, so buffered records can sit for up to
+    ~2x flush_interval instead of the documented flush_interval.'
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+  - gpt_auditor
+- defect_id: a55938d01d1e
+  task_id: batch_writer
+  origin: gpt
+  category: concurrency
+  file: batch_writer.py
+  line_start: 68
+  line_end: 72
+  description: 'The background loop mixes two time sources: it sleeps on real wall-clock
+    time via Event.wait() but decides to flush using clock.now(). With a frozen/injected
+    clock (the stated convention for tests) _interval_elapsed never becomes true,
+    so the time-based flush never fires and the behaviour is untestable/incorrect.'
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+  - gpt_auditor
+- defect_id: 277ed799eba0
+  task_id: batch_writer
+  origin: gpt
+  category: missing-edge-case
+  file: batch_writer.py
+  line_start: 60
+  line_end: 66
+  description: close() sets _closed = True before/while flushing. If _sink.write raises,
+    the exception propagates, the records remain in _buffer, but the writer is already
+    closed and the flush thread is stopped, so those records can never be delivered
+    — violating 'close must not lose buffered records'. No retry, no logging, no re-open
+    path.
+  severity: critical
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: 9222bdac439d
+  task_id: batch_writer
+  origin: gpt
+  category: resource-leak
+  file: batch_writer.py
+  line_start: 56
+  line_end: 66
+  description: close() never closes/releases the sink even though the sink is the
+    owned network/file handle; per the conventions any such handle must be closed
+    on all paths. Also _flush_thread.join() has no timeout, so a hanging sink.write
+    makes close() block forever.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+  - gpt_auditor
+- defect_id: 2b23d6f47df2
+  task_id: batch_writer
+  origin: gpt
+  category: concurrency
+  file: batch_writer.py
+  line_start: 74
+  line_end: 81
+  description: _sink.write is invoked while holding the writer's lock, so a slow or
+    blocking sink blocks every producer thread's write() and also blocks close();
+    the flush I/O should happen outside the critical section (with the batch detached
+    from the buffer first).
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: 6780ad80aa02
+  task_id: batch_writer
+  origin: gpt
+  category: resource-leak
+  file: batch_writer.py
+  line_start: 36
+  line_end: 41
+  description: The flush thread is started in the constructor as a daemon and there
+    is no finalizer/context-manager support; if a caller never invokes close(), buffered
+    records are silently discarded at interpreter shutdown and the started thread
+    is unmanaged if construction is followed by an error elsewhere.
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: d34aba07458c
+  task_id: paginated_fetch
+  origin: claude
+  category: logic-error
+  file: paginated_fetch.py
+  line_start: 9
+  line_end: 9
+  description: '`ApiClient` is never imported or defined; the annotation is evaluated
+    at function-definition time (no `from __future__ import annotations`), so importing
+    the module raises NameError.'
+  severity: critical
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+  - gpt_auditor
+- defect_id: 0532ad5b694e
+  task_id: paginated_fetch
+  origin: claude
+  category: logic-error
+  file: paginated_fetch.py
+  line_start: 45
+  line_end: 50
+  description: Repeated-cursor handling raises PaginationError, discarding every record
+    already collected, even though the task states repeated cursors are an expected
+    transient condition under load and the log message claims it is merely 'stopping
+    pagination'. Behaviour contradicts the log/docstring and loses data.
+  severity: critical
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: 860f8c0e2aae
+  task_id: paginated_fetch
+  origin: claude
+  category: null-boundary
+  file: paginated_fetch.py
+  line_start: 28
+  line_end: 29
+  description: No validation that `page` is a dict (or non-None). If the client returns
+    None or a list, `page.get` raises AttributeError/TypeError outside the inner try,
+    propagating a non-domain exception in violation of the errors convention.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: 6aa1ea24e490
+  task_id: paginated_fetch
+  origin: claude
+  category: convention-violation
+  file: paginated_fetch.py
+  line_start: 3
+  line_end: 3
+  description: '`from clock import now` binds the function at import time; tests that
+    freeze time by patching `clock.now` will not affect this module. Convention requires
+    calling `clock.now()` through the module.'
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+  - gpt_auditor
+- defect_id: 3958783baefe
+  task_id: paginated_fetch
+  origin: claude
+  category: missing-edge-case
+  file: paginated_fetch.py
+  line_start: 31
+  line_end: 34
+  description: '`items` is only checked for None; a non-list value (e.g. dict or str)
+    is silently passed to `list.extend`, producing garbage records instead of a PaginationError.'
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: 4bee1f08a655
+  task_id: paginated_fetch
+  origin: claude
+  category: resource-leak
+  file: paginated_fetch.py
+  line_start: 54
+  line_end: 57
+  description: The function closes a client it does not own, so callers cannot reuse
+    or make a second call with the same client; additionally an exception from `close()`
+    inside `finally` masks the original PaginationError and prevents returning collected
+    records.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+  - gpt_auditor
+- defect_id: e0f451361f6a
+  task_id: paginated_fetch
+  origin: claude
+  category: missing-edge-case
+  file: paginated_fetch.py
+  line_start: 11
+  line_end: 14
+  description: '`isinstance(page_size, int)` accepts bool (True passes as page_size
+    1), so an obviously invalid input escapes InvalidInput validation.'
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+  - gpt_auditor
+- defect_id: 88ce10482e95
+  task_id: paginated_fetch
+  origin: claude
+  category: logic-error
+  file: paginated_fetch.py
+  line_start: 25
+  line_end: 26
+  description: Bare `except Exception` around the fetch also swallows programming
+    errors (TypeError, AttributeError) and re-labels them as PaginationError, hiding
+    real bugs.
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: cc31e82b36bf
+  task_id: paginated_fetch
+  origin: claude
+  category: missing-edge-case
+  file: paginated_fetch.py
+  line_start: 42
+  line_end: 43
+  description: Only `None` terminates pagination; a falsy-but-not-None cursor such
+    as "" is treated as a valid cursor and is re-sent, and no type check on next_cursor
+    is performed before adding it to the `set[str]`.
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: 0d8ccc24f7d6
+  task_id: paginated_fetch
+  origin: gpt
+  category: logic-error
+  file: paginated_fetch.py
+  line_start: 49
+  line_end: 51
+  description: A repeated cursor is documented as a transient condition that occurs
+    'under load', but the code hard-fails with PaginationError and discards every
+    record already accumulated. A transient duplicate should either terminate pagination
+    gracefully (returning collected items) or be retried; aborting the whole fetch
+    loses all data on a known recoverable condition.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: 919dd0bfc3d4
+  task_id: paginated_fetch
+  origin: gpt
+  category: missing-edge-case
+  file: paginated_fetch.py
+  line_start: 39
+  line_end: 47
+  description: An empty-string next_cursor ('') is accepted as a valid continuation
+    cursor because only `is None` is treated as end-of-pagination. Many cursor APIs
+    signal exhaustion with an empty string; here it causes an extra request and then
+    a spurious PaginationError when '' repeats.
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: 0e5f45b89241
+  task_id: paginated_fetch
+  origin: gpt
+  category: convention-violation
+  file: paginated_fetch.py
+  line_start: 26
+  line_end: 26
+  description: Exceptions raised by client.fetch_page (network/transport errors) propagate
+    untranslated, violating the convention that errors surface as domain exceptions
+    from errors.py. They should be caught and re-raised as PaginationError.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: 49cb70f3e6dd
+  task_id: config_merge
+  origin: claude
+  category: missing-edge-case
+  file: config_merge.py
+  line_start: 17
+  line_end: 21
+  description: 'Unbounded recursion: deeply nested dicts raise RecursionError instead
+    of a domain exception, and a self-referential/cyclic `override` dict causes infinite
+    recursion (copy.deepcopy handles cycles, but the recursive merge does not).'
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: aba987913c8e
+  task_id: signed_url
+  origin: claude
+  category: logic-error
+  file: signed_url.py
+  line_start: 59
+  line_end: 62
+  description: 'Expiry check is inverted/mis-scoped: `expires` is the absolute expiry
+    timestamp, so the URL must be rejected when `now_ts > expires`. Instead the code
+    grants an extra `max_age_seconds` grace window (`now_ts - expires > max_age_seconds`),
+    so an already-expired URL is accepted for up to `max_age_seconds` after its stated
+    expiry. With the common call `max_age_seconds` of minutes/hours this is a security-relevant
+    validity extension.'
+  severity: critical
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+  - gpt_auditor
+- defect_id: 26facd3f69ca
+  task_id: signed_url
+  origin: claude
+  category: security-relevant
+  file: signed_url.py
+  line_start: 42
+  line_end: 47
+  description: The signed payload is reconstructed from the int-parsed `expires` rather
+    than the raw query substring. Because `int()` accepts leading '+', surrounding
+    whitespace and PEP-515 underscores ('+1700000000', ' 1700000000', '1_700_000_000'),
+    several distinct URL strings all canonicalize to the same signed payload, so one
+    signature validates many different URLs. Verification should HMAC the exact received
+    `<path>?expires=<raw>` text.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: 8754104568e3
+  task_id: signed_url
+  origin: claude
+  category: missing-edge-case
+  file: signed_url.py
+  line_start: 26
+  line_end: 34
+  description: 'Duplicate query parameters are silently tolerated: `parse_qs` returns
+    lists and only the first `expires`/`sig` value is used. A URL like `?expires=X&sig=Y&expires=Z`
+    verifies against the first pair while downstream consumers (or a different parser)
+    may honour the last, enabling parameter-pollution divergence. Reject when `len(expires_values)
+    != 1 or len(sig_values) != 1`.'
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: d436b3eded51
+  task_id: signed_url
+  origin: gpt
+  category: logic-error
+  file: signed_url.py
+  line_start: 52
+  line_end: 53
+  description: 'The expiry check adds an upper bound (`expires <= now + max_age_seconds`)
+    that is not part of the spec: a correctly signed URL whose expiry is farther in
+    the future than max_age_seconds is rejected even though it has not expired. The
+    spec only requires the signature to be valid and `expires` to be in the future,
+    so this rejects valid URLs (and, with max_age_seconds=0, only accepts URLs expiring
+    exactly at the current second).'
+  severity: critical
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+  - gpt_auditor
+- defect_id: 175ff06f52bd
+  task_id: signed_url
+  origin: gpt
+  category: untested-branch
+  file: signed_url.py
+  line_start: 37
+  line_end: 40
+  description: 'Dead code: the regex group `expires` matches only `[0-9]+`, so `int(expires_text)`
+    can never raise ValueError; the except branch is unreachable and untestable.'
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: ffa79cc9e94b
+  task_id: signed_url
+  origin: gpt
+  category: convention-violation
+  file: signed_url.py
+  line_start: 29
+  line_end: 30
+  description: Malformed input (URL containing control characters/spaces) silently
+    returns False instead of raising `InvalidInput` as the input-validation convention
+    requires; also no diagnostic is emitted through the module `logger` on any failure
+    path, so the declared logger is never used.
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: 15cb7172c962
+  task_id: signed_url
+  origin: gpt
+  category: missing-edge-case
+  file: signed_url.py
+  line_start: 52
+  line_end: 53
+  description: Boundary handling treats `expires == now` as still valid (`now <= expires`),
+    i.e. a URL at its exact expiry instant is accepted; expiry boundary semantics
+    should be exclusive (`now < expires`).
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: d4565264f441
+  task_id: cache_with_ttl
+  origin: claude
+  category: missing-edge-case
+  file: cache_with_ttl.py
+  line_start: 65
+  line_end: 67
+  description: Eviction on overflow only considers LRU order and never purges expired
+    entries first, so a still-valid entry is discarded while dead (expired) entries
+    keep occupying capacity. Expired entries are only removed lazily in get(), so
+    keys never read again stay resident forever.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: a3af9cd549c9
+  task_id: cache_with_ttl
+  origin: claude
+  category: null-boundary
+  file: cache_with_ttl.py
+  line_start: 19
+  line_end: 22
+  description: 'Constructor validation does not type-check its inputs: a non-numeric
+    max_entries/ttl_seconds (e.g. None or a string) makes the ''<= 0'' comparison
+    raise TypeError instead of the required domain InvalidInput, and a non-integer
+    float max_entries is accepted despite the docstring requiring a positive integer.'
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: 495e2327ae24
+  task_id: cache_with_ttl
+  origin: claude
+  category: missing-edge-case
+  file: cache_with_ttl.py
+  line_start: 38
+  line_end: 45
+  description: get() returns None for a missing key, an expired key, and a key whose
+    stored value is legitimately None, so callers cannot distinguish a cache miss
+    from a cached None; no sentinel or contains/default mechanism is provided.
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: d1f0e0c5ecda
+  task_id: cache_with_ttl
+  origin: gpt
+  category: missing-edge-case
+  file: cache_with_ttl.py
+  line_start: 57
+  line_end: 59
+  description: Eviction picks the least-recently-used entry without first purging
+    expired entries. When the cache is full of stale (already expired) entries, a
+    freshly written live entry can be evicted while dead entries remain, wasting capacity
+    and causing avoidable cache misses. Expired entries are only reclaimed if they
+    happen to be read via get() or happen to be the LRU victim.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: 0a3a72a18523
+  task_id: cache_with_ttl
+  origin: gpt
+  category: null-boundary
+  file: cache_with_ttl.py
+  line_start: 35
+  line_end: 50
+  description: 'get() conflates a stored value of None with ''absent or expired'':
+    there is no way for a caller to distinguish a legitimately cached None from a
+    miss, so any key whose value is None will be treated as uncached on every read.'
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: f068099c6e58
+  task_id: cache_with_ttl
+  origin: gpt
+  category: missing-edge-case
+  file: cache_with_ttl.py
+  line_start: 61
+  line_end: 67
+  description: _validate_key only checks the type; empty strings (and other degenerate
+    keys) are accepted even though the contract requires public entry points to validate
+    inputs and raise InvalidInput on violations.
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+  - gpt_auditor
+- defect_id: 92fa6efd0c3a
+  task_id: csv_ingest
+  origin: claude
+  category: missing-edge-case
+  file: csv_ingest.py
+  line_start: 68
+  line_end: 91
+  description: Only csv.Error is translated into the domain IngestError. Decoding
+    failures (UnicodeDecodeError, a ValueError) and I/O errors raised lazily while
+    iterating the reader (OSError) escape as non-domain exceptions, violating the
+    'errors are raised as domain exceptions' convention. Any non-UTF-8 CSV crashes
+    the caller with a raw UnicodeDecodeError.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: 00ee0c4d66df
+  task_id: csv_ingest
+  origin: claude
+  category: logic-error
+  file: csv_ingest.py
+  line_start: 78
+  line_end: 88
+  description: Sink write failures are counted as 'rows_skipped', conflating them
+    with validation failures. The report then claims rows were skipped for validation
+    reasons when the sink is broken; a totally failing sink returns a successful report
+    with rows_written=0 instead of raising IngestError.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+  - gpt_auditor
+- defect_id: 22e26d954d70
+  task_id: csv_ingest
+  origin: claude
+  category: missing-edge-case
+  file: csv_ingest.py
+  line_start: 52
+  line_end: 53
+  description: Input validation only checks that sink is not None; it never verifies
+    sink has a callable write(). A malformed sink causes an AttributeError/TypeError
+    on every row, which is swallowed by the broad except at line 80, silently producing
+    an all-skipped report instead of raising InvalidInput.
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: 66d90a8da8f5
+  task_id: csv_ingest
+  origin: claude
+  category: missing-edge-case
+  file: csv_ingest.py
+  line_start: 63
+  line_end: 63
+  description: File is opened with encoding='utf-8' rather than 'utf-8-sig'; a BOM-prefixed
+    CSV (common from Excel) yields a first header name containing '\ufeff', so every
+    lookup of that column by name fails downstream.
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: 32a2b09c8807
+  task_id: csv_ingest
+  origin: gpt
+  category: logic-error
+  file: csv_ingest.py
+  line_start: 77
+  line_end: 78
+  description: The outer `except OSError` wraps the entire `with` body, not just the
+    close. Any OSError raised by `sink.validate` or `sink.write` (or the reader) is
+    swallowed and re-raised as InvalidInput('unable to close CSV file'), masking the
+    real failure with a wrong diagnosis. Only the implicit close on exit of the `with`
+    should be guarded.
+  severity: critical
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+  - gpt_auditor
+- defect_id: f336878281a6
+  task_id: csv_ingest
+  origin: gpt
+  category: missing-edge-case
+  file: csv_ingest.py
+  line_start: 60
+  line_end: 61
+  description: A single malformed row (csv.Error from strict=True, e.g. bad quoting,
+    or a field exceeding csv's field-size limit) aborts the whole ingestion and discards
+    all counts, instead of being treated as an unusable row that is skipped and counted.
+    Same for a mid-file UnicodeDecodeError; partial progress is lost and no counts
+    are reported.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: 62e6d0505d19
+  task_id: csv_ingest
+  origin: gpt
+  category: untested-branch
+  file: csv_ingest.py
+  line_start: 48
+  line_end: 49
+  description: '`UnicodeError` in the open() handler is effectively unreachable: open()
+    does not decode content, so decoding errors only surface later during read (already
+    handled at line 60). An unknown encoding would raise LookupError, which is not
+    caught.'
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: 4ccfc03c3f7c
+  task_id: csv_ingest
+  origin: gpt
+  category: convention-violation
+  file: csv_ingest.py
+  line_start: 48
+  line_end: 49
+  description: Environmental I/O failures (FileNotFoundError, PermissionError, IsADirectoryError)
+    are reported as InvalidInput, conflating caller-argument validation errors with
+    runtime I/O failures; a distinct domain exception from errors.py should be used
+    so callers can distinguish them.
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: 571059370f3d
+  task_id: dedupe_events
+  origin: claude
+  category: resource-leak
+  file: dedupe_events.py
+  line_start: 37
+  line_end: 66
+  description: '`last_seen` grows without bound: entries are never evicted once their
+    timestamp is older than `window_seconds`. On the unbounded stream the task specifies,
+    memory grows linearly with the number of distinct keys forever. A purge of stale
+    keys (or an ordered structure trimmed by the current timestamp) is required.'
+  severity: critical
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+  - gpt_auditor
+- defect_id: 334f34f0157a
+  task_id: dedupe_events
+  origin: claude
+  category: convention-violation
+  file: dedupe_events.py
+  line_start: 28
+  line_end: 39
+  description: '`dedupe` is a generator function, so the body (including all input
+    validation) does not run until the first `next()` call. `dedupe(None, -5)` returns
+    a generator without raising, violating the convention that public functions validate
+    their inputs and raise `InvalidInput` on violation. Validation must happen in
+    a non-generator wrapper that delegates to an inner generator.'
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+  - gpt_auditor
+- defect_id: 2df5cc09e865
+  task_id: dedupe_events
+  origin: claude
+  category: convention-violation
+  file: dedupe_events.py
+  line_start: 20
+  line_end: 20
+  description: '`later - earlier` can raise a bare `TypeError` (e.g. mixing a datetime
+    with a numeric epoch, or two incompatible timestamp types) which escapes uncaught.
+    The intended `InvalidInput` on line 25 is unreachable for that case; the subtraction
+    should be wrapped in try/except TypeError and re-raised as `InvalidInput`.'
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: b229cf75812d
+  task_id: dedupe_events
+  origin: claude
+  category: missing-edge-case
+  file: dedupe_events.py
+  line_start: 30
+  line_end: 35
+  description: '`float(''nan'')` (and `float(''inf'')`) pass validation: `nan < 0`
+    is False. With a NaN window every comparison `elapsed < window_seconds` is False,
+    so no duplicate is ever suppressed and the function silently misbehaves instead
+    of raising `InvalidInput`.'
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+  - gpt_auditor
+- defect_id: d765c5dabc83
+  task_id: dedupe_events
+  origin: claude
+  category: missing-edge-case
+  file: dedupe_events.py
+  line_start: 50
+  line_end: 56
+  description: The stream-ordering check only fires when the same key has been seen
+    before, so global out-of-order input across different keys is silently accepted.
+    Compare against the last timestamp observed on the stream, not just the last for
+    this key.
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+  - gpt_auditor
+- defect_id: 4f470539c947
+  task_id: dedupe_events
+  origin: gpt
+  category: logic-error
+  file: dedupe_events.py
+  line_start: 70
+  line_end: 72
+  description: The `recent` entry (and a new deque occurrence) is written for every
+    event, including suppressed duplicates. A duplicate therefore refreshes/extends
+    the suppression window instead of it being anchored to the last emitted occurrence,
+    so a steady stream of duplicates spaced under `window_seconds` suppresses the
+    key forever rather than re-emitting it once the window since the last *surviving*
+    event has elapsed. It also grows `occurrences` with entries for events that were
+    never emitted.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: ed35eb93c787
+  task_id: dedupe_events
+  origin: gpt
+  category: convention-violation
+  file: dedupe_events.py
+  line_start: 1
+  line_end: 11
+  description: Conventions require a module-level `logger` (no prints); no logger
+    is defined or used anywhere in the module, so no diagnostics are emitted for dropped/invalid
+    events.
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: 869e356006c4
+  task_id: dedupe_events
+  origin: gpt
+  category: convention-violation
+  file: dedupe_events.py
+  line_start: 22
+  line_end: 27
+  description: '`dedupe` is a public function that must validate its inputs and raise
+    `InvalidInput` on violation, but per-element validation (missing `key`/`timestamp`,
+    unhashable key, unsubtractable or out-of-order timestamps) happens inside the
+    returned generator, so those `InvalidInput` errors surface only later during iteration,
+    not at call time.'
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: 7f4e89225026
+  task_id: dedupe_events
+  origin: gpt
+  category: missing-edge-case
+  file: dedupe_events.py
+  line_start: 36
+  line_end: 41
+  description: Stream elements are never validated to be `Event` instances; any object
+    exposing `key`/`timestamp` is accepted, and an element that raises a non-AttributeError
+    on attribute access propagates as a non-domain exception instead of `InvalidInput`.
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: 84442cd4ef81
+  task_id: dedupe_events
+  origin: gpt
+  category: missing-edge-case
+  file: dedupe_events.py
+  line_start: 48
+  line_end: 52
+  description: '`previous_timestamp is None` is used as a ''first event'' sentinel;
+    if an event legitimately carries `timestamp is None`, the ordering check is silently
+    skipped for the following event (and the None timestamp is stored in `recent`/`occurrences`),
+    instead of being rejected as invalid input.'
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: c6725e770f61
+  task_id: partial_bulk_update
+  origin: gpt
+  category: missing-edge-case
+  file: partial_bulk_update.py
+  line_start: 16
+  line_end: 21
+  description: Only DomainError is caught. Any other exception raised by store.update
+    (e.g. ValueError, KeyError, TypeError, IOError from an underlying backend) propagates
+    out of the loop and aborts all remaining updates, directly violating the requirement
+    that a single failure must not prevent the rest from being attempted. Such an
+    exception also discards the already-accumulated succeeded/failed results, so the
+    caller cannot tell what was applied.
+  severity: critical
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: d7c30b53223a
+  task_id: partial_bulk_update
+  origin: gpt
+  category: convention-violation
+  file: partial_bulk_update.py
+  line_start: 18
+  line_end: 19
+  description: Failures are swallowed into the `failed` list with no diagnostic output;
+    the module-level `logger` mandated by the conventions is never used, so per-update
+    errors leave no trace in logs.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - claude_auditor
+- defect_id: e4a1c1d61c25
+  task_id: rate_limiter
+  origin: claude
+  category: concurrency
+  file: rate_limiter.py
+  line_start: 44
+  line_end: 53
+  description: The timestamp is captured before acquiring the lock. Concurrent callers
+    can acquire the lock in a different order from timestamp creation and append decreasing
+    timestamps to the deque. Since expiration only removes from the front, expired
+    entries behind newer entries can remain and cause incorrect denials.
+  severity: critical
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: 4f7bd2a29d82
+  task_id: rate_limiter
+  origin: claude
+  category: convention-violation
+  file: rate_limiter.py
+  line_start: 30
+  line_end: 34
+  description: An arbitrarily large positive integer passes validation but float(window_seconds)
+    can raise OverflowError instead of the required InvalidInput domain exception.
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: 126f5ccc1373
+  task_id: rate_limiter
+  origin: gpt
+  category: missing-edge-case
+  file: rate_limiter.py
+  line_start: 28
+  line_end: 37
+  description: Positive finite window values smaller than timedelta's microsecond
+    resolution can be accepted but rounded to a zero-duration window. Existing requests
+    are then immediately expired, so the configured limit is not enforced.
+  severity: critical
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: 4b073c3ff4c3
+  task_id: rate_limiter
+  origin: gpt
+  category: convention-violation
+  file: rate_limiter.py
+  line_start: 28
+  line_end: 37
+  description: A positive finite window_seconds can exceed timedelta's representable
+    range. It passes validation and timedelta then raises OverflowError instead of
+    the required InvalidInput domain exception.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: 0ce72c311c13
+  task_id: retry_with_backoff
+  origin: claude
+  category: missing-edge-case
+  file: retry_with_backoff.py
+  line_start: 32
+  line_end: 32
+  description: The invocation of fn has no timeout or deadline. If fn blocks indefinitely,
+    call_with_retry also blocks indefinitely, violating the guarantee that the caller
+    cannot hang indefinitely.
+  severity: critical
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: bd9e584ba30f
+  task_id: retry_with_backoff
+  origin: claude
+  category: convention-violation
+  file: retry_with_backoff.py
+  line_start: 21
+  line_end: 24
+  description: Because bool is a subclass of int, attempts=True passes validation
+    even though it is not a valid positive-integer attempt count under the public
+    input contract.
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: 0ee40a5002c8
+  task_id: retry_with_backoff
+  origin: claude
+  category: logic-error
+  file: retry_with_backoff.py
+  line_start: 55
+  line_end: 61
+  description: Exhausting the sleep budget aborts the loop before the configured number
+    of attempts has been made. The remaining attempts could instead proceed without
+    additional sleep, preserving both the attempt count and the total-wait bound.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: 4e231897851f
+  task_id: retry_with_backoff
+  origin: gpt
+  category: missing-edge-case
+  file: retry_with_backoff.py
+  line_start: 43
+  line_end: 43
+  description: fn is invoked synchronously without any timeout or deadline enforcement.
+    If fn blocks indefinitely, call_with_retry also blocks indefinitely, violating
+    the requirement that total waiting be bounded so callers cannot hang.
+  severity: critical
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: c24001520065
+  task_id: batch_writer
+  origin: claude
+  category: convention-violation
+  file: batch_writer.py
+  line_start: 9
+  line_end: 9
+  description: Importing `now` directly binds the function at module import time instead
+    of obtaining time through `clock.now()`, contrary to the clock convention and
+    preventing later monkeypatching/freezing of `clock.now` from affecting this module.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: 6c00264756da
+  task_id: batch_writer
+  origin: claude
+  category: concurrency
+  file: batch_writer.py
+  line_start: 101
+  line_end: 110
+  description: The buffer lock is released before `sink.write_batch`, so producer-triggered
+    and timer-triggered flushes can call the sink concurrently. The Sink contract
+    does not guarantee thread safety, and concurrent batches can be persisted out
+    of order or corrupt a non-thread-safe sink.
+  severity: critical
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: 75804afd1b78
+  task_id: batch_writer
+  origin: claude
+  category: logic-error
+  file: batch_writer.py
+  line_start: 105
+  line_end: 115
+  description: '`_last_flush` is updated before `write_batch` succeeds. If the sink
+    write fails and the records are restored, the failed attempt is nevertheless treated
+    as a flush and delays their next interval-based retry.'
+  severity: critical
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: 0e5e4f4da4dc
+  task_id: batch_writer
+  origin: claude
+  category: resource-leak
+  file: batch_writer.py
+  line_start: 81
+  line_end: 84
+  description: A failure from `sink.close` is only logged and suppressed. `close`
+    can therefore report success even though the sink's network or file resources
+    remain open, with no retry or error notification to the caller.
+  severity: critical
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: 7c6753eea436
+  task_id: paginated_fetch
+  origin: claude
+  category: resource-leak
+  file: paginated_fetch.py
+  line_start: 13
+  line_end: 20
+  description: The cleanup try/finally starts after page_size validation. A non-None
+    client passed with an invalid page size is therefore not closed on that exit path.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: 96e592c94065
+  task_id: paginated_fetch
+  origin: claude
+  category: convention-violation
+  file: paginated_fetch.py
+  line_start: 28
+  line_end: 34
+  description: The response is not validated as a mapping with correctly typed items
+    and next_cursor fields. Malformed responses can leak AttributeError or TypeError,
+    or pass a non-string cursor to later requests, rather than raising PaginationError.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: e76e062304aa
+  task_id: paginated_fetch
+  origin: claude
+  category: convention-violation
+  file: paginated_fetch.py
+  line_start: 54
+  line_end: 57
+  description: Exceptions from client.close() propagate without conversion to a domain
+    exception and can also mask an active PaginationError from the pagination body.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: 8e205fe76d06
+  task_id: config_merge
+  origin: gpt
+  category: missing-edge-case
+  file: config_merge.py
+  line_start: 23
+  line_end: 28
+  description: If matching dictionary values contain a cycle (for example, both base['self']
+    and override['self'] refer to their respective containing dictionaries), recursive
+    merging never terminates and raises RecursionError instead of returning a non-mutating
+    merged result.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: 313b51cca449
+  task_id: signed_url
+  origin: claude
+  category: security-relevant
+  file: signed_url.py
+  line_start: 33
+  line_end: 42
+  description: The signed payload uses the integer-normalized expiration value instead
+    of the exact `expires` text from the URL. Alternate representations such as leading
+    zeros or whitespace can therefore validate using a signature for a different textual
+    payload, contrary to the requirement that the HMAC cover the exact `<path>?expires=<unix_ts>`
+    string.
+  severity: critical
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: 5831e4078a51
+  task_id: signed_url
+  origin: claude
+  category: security-relevant
+  file: signed_url.py
+  line_start: 24
+  line_end: 34
+  description: Duplicate `expires` or `sig` parameters are silently accepted and only
+    the first value is verified. Ambiguous URLs can be interpreted using a different
+    occurrence by downstream components; duplicates must be rejected.
+  severity: critical
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: be63cefb09a5
+  task_id: signed_url
+  origin: claude
+  category: convention-violation
+  file: signed_url.py
+  line_start: 21
+  line_end: 21
+  description: '`urlsplit` can raise `ValueError` for malformed URL strings, such
+    as an invalid bracketed IPv6 host. The public function does not translate this
+    input failure into the required `InvalidInput` domain exception.'
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: c5ea95251747
+  task_id: signed_url
+  origin: claude
+  category: convention-violation
+  file: signed_url.py
+  line_start: 43
+  line_end: 47
+  description: Strings containing unpaired Unicode surrogates pass the input checks
+    but can raise `UnicodeEncodeError` while encoding the secret or payload. Such
+    invalid inputs are not converted to the required `InvalidInput` domain exception.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: c0d7043866bd
+  task_id: signed_url
+  origin: gpt
+  category: convention-violation
+  file: signed_url.py
+  line_start: 44
+  line_end: 45
+  description: A non-empty secret containing an unpaired Unicode surrogate passes
+    validation but UTF-8 encoding raises UnicodeEncodeError instead of the required
+    InvalidInput domain exception.
+  severity: minor
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: 84d97a8fc603
+  task_id: cache_with_ttl
+  origin: claude
+  category: convention-violation
+  file: cache_with_ttl.py
+  line_start: 19
+  line_end: 22
+  description: max_entries is range-checked without first validating that it is a
+    non-boolean integer. Values such as 1.5, True, or NaN are accepted, while values
+    such as None or strings raise TypeError instead of InvalidInput; NaN also disables
+    capacity eviction because every length comparison against it is false.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: f3e8db01bb11
+  task_id: cache_with_ttl
+  origin: claude
+  category: concurrency
+  file: cache_with_ttl.py
+  line_start: 35
+  line_end: 42
+  description: get captures the current time before acquiring the cache lock. If lock
+    acquisition is delayed, expiration is evaluated using stale time and an entry
+    that has expired while the thread waited can be returned.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: 5de577b70ba2
+  task_id: cache_with_ttl
+  origin: claude
+  category: concurrency
+  file: cache_with_ttl.py
+  line_start: 55
+  line_end: 62
+  description: put computes expires_at before acquiring the cache lock. Time spent
+    waiting for the lock consumes the new entry's TTL, so a delayed insertion can
+    receive a shortened TTL or be expired immediately when it is finally stored.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: e4494364e83b
+  task_id: cache_with_ttl
+  origin: gpt
+  category: missing-edge-case
+  file: cache_with_ttl.py
+  line_start: 25
+  line_end: 25
+  description: math.isfinite(ttl_seconds) can raise OverflowError for an arbitrarily
+    large integer instead of rejecting it with InvalidInput.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: da58017e159d
+  task_id: cache_with_ttl
+  origin: gpt
+  category: missing-edge-case
+  file: cache_with_ttl.py
+  line_start: 31
+  line_end: 31
+  description: A positive finite ttl_seconds can exceed timedelta's representable
+    range, causing the constructor to leak OverflowError instead of raising InvalidInput.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: d0a6a83aef9a
+  task_id: cache_with_ttl
+  origin: gpt
+  category: logic-error
+  file: cache_with_ttl.py
+  line_start: 31
+  line_end: 31
+  description: Positive TTL values below timedelta's resolution can round to a zero
+    duration, so accepted entries expire immediately despite the required positive
+    TTL.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: e59c4d9446e2
+  task_id: cache_with_ttl
+  origin: gpt
+  category: logic-error
+  file: cache_with_ttl.py
+  line_start: 57
+  line_end: 59
+  description: When at capacity, put evicts the least-recently-used record without
+    first removing expired records. An expired record that is not currently LRU can
+    therefore be retained while a live entry is evicted, reducing usable capacity.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: a5027030191b
+  task_id: csv_ingest
+  origin: claude
+  category: convention-violation
+  file: csv_ingest.py
+  line_start: 52
+  line_end: 53
+  description: The public ingest function validates only that sink is non-None; objects
+    without a callable write method are accepted instead of causing InvalidInput.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: 7e701155f7ef
+  task_id: csv_ingest
+  origin: claude
+  category: convention-violation
+  file: csv_ingest.py
+  line_start: 68
+  line_end: 91
+  description: Only csv.Error is translated to IngestError. File-read OSError and
+    text-decoding errors such as UnicodeDecodeError raised while iterating the reader
+    escape as non-domain exceptions.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: 8655b1e92122
+  task_id: csv_ingest
+  origin: claude
+  category: convention-violation
+  file: csv_ingest.py
+  line_start: 92
+  line_end: 93
+  description: An OSError from handle.close() escapes directly and can also replace
+    an active parsing or sink exception, violating the requirement that errors be
+    exposed as domain exceptions.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: 41eb01b6efd7
+  task_id: csv_ingest
+  origin: gpt
+  category: convention-violation
+  file: csv_ingest.py
+  line_start: 65
+  line_end: 68
+  description: Exceptions from sink.validate other than InvalidInput can escape the
+    public API as arbitrary non-domain exceptions, violating the requirement that
+    errors be exposed as domain exceptions from errors.py.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: 7c48bd9e864d
+  task_id: csv_ingest
+  origin: gpt
+  category: convention-violation
+  file: csv_ingest.py
+  line_start: 75
+  line_end: 75
+  description: Exceptions from sink.write other than OSError are allowed to escape
+    as arbitrary non-domain exceptions, violating the domain-exception convention.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: dd6a0ebbb036
+  task_id: dedupe_events
+  origin: claude
+  category: convention-violation
+  file: dedupe_events.py
+  line_start: 43
+  line_end: 52
+  description: The event key is checked only for None, not hashability. An unhashable
+    key causes `last_seen.get(key)` to raise a built-in `TypeError` rather than `InvalidInput`.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: 34a11141b90f
+  task_id: dedupe_events
+  origin: gpt
+  category: missing-edge-case
+  file: dedupe_events.py
+  line_start: 18
+  line_end: 18
+  description: Converting an accepted Real to float can raise OverflowError, ValueError,
+    or TypeError (for example, for a very large finite integer); these escape instead
+    of being translated to InvalidInput as required for invalid public inputs.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: bca590e8b2d0
+  task_id: dedupe_events
+  origin: gpt
+  category: convention-violation
+  file: dedupe_events.py
+  line_start: 36
+  line_end: 41
+  description: Elements are only duck-typed by accessing key and timestamp; the public
+    function never validates that each element is an Event instance, so arbitrary
+    objects with those attributes are accepted despite the declared input contract.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: 4d46e44ea424
+  task_id: partial_bulk_update
+  origin: claude
+  category: convention-violation
+  file: partial_bulk_update.py
+  line_start: 26
+  line_end: 27
+  description: The public function validates only that store is non-None, not that
+    it is a Store. A non-None invalid value can later raise AttributeError instead
+    of the required InvalidInput.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: 6236824d678f
+  task_id: partial_bulk_update
+  origin: claude
+  category: convention-violation
+  file: partial_bulk_update.py
+  line_start: 30
+  line_end: 31
+  description: Update entries are checked only for None; non-Update values are not
+    rejected with InvalidInput and can instead cause errors during store.apply.
+  severity: major
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor
+- defect_id: 68208bfed430
+  task_id: partial_bulk_update
+  origin: claude
+  category: logic-error
+  file: partial_bulk_update.py
+  line_start: 36
+  line_end: 40
+  description: Only StoreError is caught. Any other exception raised while applying
+    an individual update aborts the loop, prevents remaining updates from being attempted,
+    and leaves the caller without a complete success/failure result.
+  severity: critical
+  source: audit
+  confirmed: true
+  proposed_by:
+  - gpt_auditor

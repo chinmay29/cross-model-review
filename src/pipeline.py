@@ -149,9 +149,14 @@ def review_matrix(
     """
     context_by_task = context_by_task or {}
     runs: list[ReviewRun] = []
+    total = len(generations) * len(clients)
+    done = 0
     for generation in generations:
         task = tasks[generation.task_id]
         for reviewer_key, client in clients.items():
+            done += 1
+            arm = "self " if reviewer_key == generation.generator else "cross"
+            print(f"  [{done:>2}/{total}] {arm}  {reviewer_key} -> {generation.generator}'s {generation.task_id} ...", flush=True)
             runs.append(review(
                 client=client,
                 reviewer_key=reviewer_key,

@@ -45,13 +45,15 @@ class ModelClient:
     """Base interface. Subclasses implement `_call`."""
 
     def __init__(self, model: str, api_key: str, temperature: Optional[float] = 0.0,
-                 max_tokens: int = 4096, timeout: int = 120, max_retries: int = 4,
+                 max_tokens: int = 4096, timeout: int = 300, max_retries: int = 4,
                  reasoning_effort: str = "medium"):
         self.model = model
         self.api_key = api_key
         self.temperature = temperature
         self.max_tokens = max_tokens
-        self.timeout = timeout
+        # (connect, read). A bare int sets only connect timeout, so a call that
+        # connects then stalls hangs forever — the tuple bounds read time too.
+        self.timeout = (15, timeout)
         self.max_retries = max_retries
         self.reasoning_effort = reasoning_effort
 
